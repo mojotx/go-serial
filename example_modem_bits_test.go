@@ -11,10 +11,10 @@ import (
 	"log"
 	"time"
 
-	"go.bug.st/serial"
+	"github.com/mojotx/go-serial"
 )
 
-func ExampleGetSetModemBits() {
+func ExampleGettModemBits() {
 	// Open the first serial port detected at 9600bps N81
 	mode := &serial.Mode{
 		BaudRate: 9600,

@@ -4,6 +4,7 @@
 // license that can be found in the LICENSE file.
 //
 
+//go:build linux || darwin || freebsd || openbsd
 // +build linux darwin freebsd openbsd
 
 package serial
@@ -16,7 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"go.bug.st/serial/unixutils"
+	"github.com/mojotx/go-serial/unixutils"
 	"golang.org/x/sys/unix"
 )
 
@@ -35,14 +36,19 @@ func (port *unixPort) Close() error {
 	}
 
 	// Close port
-	port.releaseExclusiveAccess()
+	if err := port.releaseExclusiveAccess(); err != nil {
+		return err
+	}
+
 	if err := unix.Close(port.handle); err != nil {
 		return err
 	}
 
 	if port.closeSignal != nil {
 		// Send close signal to all pending reads (if any)
-		port.closeSignal.Write([]byte{0})
+		if _, err := port.closeSignal.Write([]byte{0}); err != nil {
+			return err
+		}
 
 		// Wait for all readers to complete
 		port.closeLock.Lock()
@@ -72,7 +78,7 @@ func (port *unixPort) Read(p []byte) (int, error) {
 	for {
 		timeout := time.Duration(-1)
 		if port.readTimeout != NoTimeout {
-			timeout = deadline.Sub(time.Now())
+			timeout = time.Until(deadline)
 		}
 		res, err := unixutils.Select(fds, nil, fds, timeout)
 		if err == unix.EINTR {
@@ -221,7 +227,7 @@ func nativeOpen(portName string, mode *Mode) (*unixPort, error) {
 	// Setup serial port
 	settings, err := port.getTermSettings()
 	if err != nil {
-		port.Close()
+		_ = port.Close()
 		return nil, &PortError{code: InvalidSerialPort}
 	}
 
@@ -232,25 +238,29 @@ func nativeOpen(portName string, mode *Mode) (*unixPort, error) {
 	setTermSettingsCtsRts(false, settings)
 
 	if port.setTermSettings(settings) != nil {
-		port.Close()
+		_ = port.Close()
 		return nil, &PortError{code: InvalidSerialPort}
 	}
 
 	// MacOSX require that this operation is the last one otherwise an
 	// 'Invalid serial port' error is returned... don't know why...
 	if port.SetMode(mode) != nil {
-		port.Close()
+		_ = port.Close()
 		return nil, &PortError{code: InvalidSerialPort}
 	}
 
-	unix.SetNonblock(h, false)
+	if err = unix.SetNonblock(h, false); err != nil {
+		return nil, err
+	}
 
-	port.acquireExclusiveAccess()
+	if err = port.acquireExclusiveAccess(); err != nil {
+		return nil, err
+	}
 
 	// This pipe is used as a signal to cancel blocking Read
 	pipe := &unixutils.Pipe{}
 	if err := pipe.Open(); err != nil {
-		port.Close()
+		_ = port.Close()
 		return nil, &PortError{code: InvalidSerialPort, causedBy: err}
 	}
 	port.closeSignal = pipe
@@ -264,6 +274,8 @@ func nativeGetPortsList() ([]string, error) {
 		return nil, err
 	}
 
+	re := regexp.MustCompile(regexFilter)
+
 	ports := make([]string, 0, len(files))
 	for _, f := range files {
 		// Skip folders
@@ -272,7 +284,7 @@ func nativeGetPortsList() ([]string, error) {
 		}
 
 		// Keep only devices with the correct name
-		match, err := regexp.MatchString(regexFilter, f.Name())
+		match := re.Match([]byte(f.Name()))
 		if err != nil {
 			return nil, err
 		}
@@ -291,7 +303,7 @@ func nativeGetPortsList() ([]string, error) {
 					continue
 				}
 			} else {
-				port.Close()
+				_ = port.Close()
 			}
 		}
 
